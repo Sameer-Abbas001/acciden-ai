@@ -56,7 +56,14 @@ def locked():
 
 
 def load():
-    return read_json(MANIFEST, {'rows': {}, 'last_detection': 0})
+    data = read_json(MANIFEST, {'rows': {}, 'last_detection': 0})
+    for row in data['rows'].values():
+        item = row['payload']
+        # A stale manifest read used to lose deletion flags during the final
+        # cleanup write. That write cleared the object path and byte count.
+        if item.get('has_clip') and not item.get('object_path') and item.get('clip_bytes') == 0:
+            item.update(has_clip=False, video_deleted=True, clip_url=None, status='EVIDENCE_DELETED')
+    return data
 
 
 def save(data):

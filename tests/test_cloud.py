@@ -59,6 +59,19 @@ class CloudAPI(unittest.TestCase):
             self.assertEqual(storage.load(), {'rows': {}})
             self.assertEqual(fetch.call_args.kwargs['params'], {'cache': '0'})
 
+    def test_legacy_deleted_record_without_video_is_not_ready_for_playback_or_reupload(self):
+        row = {'id': 'INC-old', 'version': 2, 'payload': {
+            'id': 'INC-old', 'has_clip': True, 'status': 'AWAITING_CONFIRMATION',
+            'object_path': None, 'clip_bytes': 0}}
+        with patch('backend.storage.read_json', return_value={'rows': {'INC-old': row}}):
+            item = self.client.get('/api/response/police/incidents').json()['incidents'][0]
+            self.assertFalse(item['has_clip'])
+            self.assertTrue(item['video_deleted'])
+            self.assertEqual(self.client.get('/api/video/INC-old').status_code, 404)
+            retry = self.client.post('/api/clips/upload', data={'incident_id': 'INC-old'},
+                                     files={'video_file': ('clip.webm', b'x' * 512, 'video/webm')})
+            self.assertEqual(retry.status_code, 409)
+
     def test_missing_recording_status_preserves_incident_and_allows_late_evidence(self):
         pending = {'id': 'INC-late', 'status': 'RECORDING_EVIDENCE', 'timestamp': '2020-01-01 00:00:00'}
         with patch('backend.storage.rows', return_value=[{'payload': pending}]):
