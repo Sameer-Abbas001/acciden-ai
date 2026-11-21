@@ -1,13 +1,122 @@
-# AcciDEN
+# AcciDEN — AI Accident Detection
 
-Accident detection with Admin, Ambulance, and Police dashboards.
+Accident detection with shared video evidence and coordinated ambulance and police response dashboards.
 
-- Sidebar buttons switch dashboards inside the current tab, preserving page and camera state.
-- No password or Connect controls.
-- Admin can delete saved accident videos while retaining incident history.
-- Devices on the same deployed domain share incidents, videos, and independent agency responses, refreshing every 15 seconds.
-- Frontend and Python API run on Vercel; persistent data uses private Vercel Blob storage.
+**Detect an incident → capture evidence → review independently → coordinate a simulated response.**
 
-See START_HERE.md and DEPLOYMENT.md for setup. Live model inference and free-plan resource compatibility still need verification on your Vercel account.
+## Features
 
-The three dashboard navigation buttons are visible only on Admin. Ambulance and Police hide the buttons and Operations heading. Browser Back or the direct /admin URL can return to Admin.
+- Analyze a live camera or uploaded traffic footage using a trained YOLO model.
+- Capture eight seconds of source video with detection overlays after an accident is detected.
+- Share the same incident and evidence with Ambulance and Police dashboards.
+- Confirm, reject, and resolve responses independently for each agency.
+- Delete stored accident videos from Admin while retaining incident history.
+- Switch dashboards within one browser tab, preserving page and camera state.
+- Sync connected devices through a shared backend every 15 seconds.
+- Support light and dark themes and responsive layouts.
+
+## Screenshots
+
+The screenshots below show the current interface in its empty state. They were captured with mocked API responses for documentation; they do not demonstrate live inference or an active emergency.
+
+### Admin dashboard
+
+Monitor traffic, configure detection, share dashboard links, and manage video storage.
+
+![AcciDEN Admin dashboard](docs/screenshots/admin.png)
+
+### Ambulance dashboard
+
+Review shared evidence and record the medical team's simulated response.
+
+![AcciDEN Ambulance dashboard](docs/screenshots/ambulance.png)
+
+### Police dashboard
+
+Review the same incident and record an independent police response.
+
+![AcciDEN Police dashboard](docs/screenshots/police.png)
+
+## Architecture
+
+The cloud deployment serves the frontend and Python API from one Vercel project. A private Vercel Blob store persists incident metadata and recordings.
+
+```mermaid
+flowchart TD
+    Camera["Camera / uploaded traffic video"] --> Admin["Admin browser: detection and recording"]
+    Admin -->|"Sampled JPEG frames"| API["Python FastAPI on Vercel Functions"]
+    API --> YOLO["YOLO model: CPU inference"]
+    Model["Trusted model weights: MODEL_URL"] -->|"Downloaded on cold start"| YOLO
+    YOLO -->|"Detection boxes and incident ID"| Admin
+    Admin -->|"Eight-second browser recording"| API
+    API <-->|"Incident manifest and private videos"| Blob["Vercel Blob"]
+    Ambulance["Ambulance dashboard: another device"] <-->|"Poll / review / playback"| API
+    Police["Police dashboard: another device"] <-->|"Poll / review / playback"| API
+    Admin -->|"Delete video; retain incident history"| API
+```
+
+See [architecture details](docs/ARCHITECTURE.md) for persistence, playback, synchronization, and the local development mode.
+
+## Dashboard routes
+
+| Route | Purpose |
+| --- | --- |
+| `/admin` | Camera/video detection, incident activity, sharing links, and video deletion |
+| `/ambulance` | Evidence review and independent medical response |
+| `/police` | Evidence review and independent police response |
+
+Dashboard navigation buttons appear only on Admin. Other devices open their dashboard using the same deployed domain. No workspace password is required.
+
+## Technology
+
+| Component | Technology |
+| --- | --- |
+| Frontend | HTML, CSS, JavaScript, Canvas, MediaRecorder |
+| Cloud API | Python, FastAPI, Vercel Functions |
+| Inference | Ultralytics YOLO, PyTorch, OpenCV |
+| Cloud persistence | Private Vercel Blob store |
+| Local backend | FastAPI, Uvicorn, local files, Socket.IO integrations |
+| Checks | Node.js tests, Python API tests, GitHub Actions |
+
+## Getting started
+
+For local use, install Python dependencies from `requirements.txt`, then run:
+
+```sh
+python server.py
+```
+
+On Windows, `START_UPDATED_APP.bat` opens the updated local Admin dashboard.
+
+Frontend checks:
+
+```sh
+npm ci
+npm run check
+npm test
+npm run build
+```
+
+## Deploy on Vercel
+
+Follow [START_HERE.md](START_HERE.md) and [DEPLOYMENT.md](DEPLOYMENT.md). Create a private Vercel Blob store and configure `BLOB_READ_WRITE_TOKEN` and `MODEL_URL`. The model file uses Git LFS; install Git LFS before your first commit.
+
+The project is configured for Vercel, but live YOLO inference and compatibility with the account's free-plan resource limits still need verification. The included documentation screenshots are not evidence of a successful cloud deployment.
+
+## Project structure
+
+```text
+api/index.py             Cloud API and detection endpoints
+backend/storage.py       Vercel Blob persistence and manifest coordination
+static/                  Dashboard HTML, CSS, and JavaScript
+model/epoch61.pt          Trained weights tracked through Git LFS
+docs/                    Screenshots and architecture documentation
+scripts/                 Frontend build, checks, and documentation capture
+tests/                   Cloud API regression tests
+server.py                Original local backend
+vercel.json              Vercel build and routing configuration
+```
+
+## Prototype scope
+
+Dispatch actions are simulations; the app does not contact real emergency services. Locations are entered by the operator. The current app has no login or role-based API authorization: anyone who can access the deployment can use its dashboard actions. Recognition quality depends on the trained model and footage. Keep the monitoring page open during capture and upload.
