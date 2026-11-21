@@ -116,8 +116,10 @@ vercel.json              Vercel build and routing configuration
 
 Dispatch actions are simulations; the app does not contact real emergency services. Locations are entered by the operator. The current app has no login or role-based API authorization: anyone who can access the deployment can use its dashboard actions. Recognition quality depends on the trained model and footage. Keep the monitoring page open during capture and upload.
 
-## Detection confirmation
+## Accident detection
 
-Cloud inference uses 512-pixel inputs, matching the checkpoint training size. Admin submits three closely spaced source frames. An incident requires an accident region in the latest frame to overlap a detection in at least one earlier frame (two of three samples). Isolated predictions remain amber candidates and do not create incidents. Model confidence is a detection score, not a verified probability of a real collision.
+The local and cloud dashboards use the same single-frame YOLO detection as `test.py`. By default, each sampled image runs through `epoch61.pt` at 320 pixels with a 25% confidence threshold. If a live camera frame returns no boxes at 320 pixels, the detector retries that frame at 640 pixels. A box labeled `accident` can immediately trigger an incident. Other classes appear as vehicles. The existing resolution and confidence controls let the operator adjust these defaults.
 
-The model weights are unchanged. This temporal filter reduces isolated predictions but cannot reject stable false positives or recover all missed accidents. Evaluating or retraining the model requires labeled accident and normal-traffic footage. The available indoor negative clip is not a representative validation set.
+Model confidence is a detection score. Evaluating the model requires labeled accident and normal-traffic footage. The available indoor negative clip is not a representative validation set.
+
+Uploaded videos pause while the cloud checks sampled frames so short events are not skipped during inference. Evidence records at normal speed. The supplied ZIP's 2.47-second annotated demo can test prediction display but cannot supply a full eight-second evidence recording. Prefer original uploaded traffic footage over filming a phone screen. The ZIP weights match the deployed model; no new model was trained.

@@ -18,7 +18,7 @@ def is_acciden_running():
         opener = build_opener(ProxyHandler({}))
         with opener.open(BASE_URL + "/api/build-info", timeout=2) as response:
             data = json.load(response)
-        return (data.get("build") == "admin-only-nav-5"
+        return (data.get("build") == "camera-frame-2"
                 and os.path.normcase(data.get("folder", "")) == os.path.normcase(str(Path(__file__).resolve().parent)))
     except (OSError, ValueError):
         return False

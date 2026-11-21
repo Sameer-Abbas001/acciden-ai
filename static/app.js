@@ -112,7 +112,7 @@ function paint() {
   requestAnimationFrame(paint);
 }
 paint();
-function releaseSource() { state.generation++; state.active = false; state.boxes = []; clearTimeout(state.timer); source.pause(); source.srcObject = null; source.removeAttribute('src'); source.load(); state.stream?.getTracks().forEach(t => t.stop()); state.stream = null; if (state.url) URL.revokeObjectURL(state.url); state.url = null; }
+function releaseSource() { state.generation++; state.shortCaptureWarning = false; state.active = false; state.boxes = []; clearTimeout(state.timer); source.pause(); source.srcObject = null; source.removeAttribute('src'); source.load(); state.stream?.getTracks().forEach(t => t.stop()); state.stream = null; if (state.url) URL.revokeObjectURL(state.url); state.url = null; }
 function sourceControls(disabled) { $('cameraButton').disabled = disabled; $('upload').disabled = disabled; $('stopButton').disabled = disabled || !state.active; }
 function stopMonitoring() { if (state.recording) { notify('Please wait for the 8-second evidence capture and upload to finish.'); return; } releaseSource(); $('monitorStatus').textContent = 'MONITOR STOPPED'; $('sourceTag').textContent = 'STOPPED'; $('feedState').textContent = 'Monitoring stopped'; $('stopButton').disabled = true; }
 $('stopButton').onclick = stopMonitoring;
@@ -123,7 +123,6 @@ async function startSource(file = null) {
   try {
     if (file) { state.url = URL.createObjectURL(file); source.src = state.url; } else { state.stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}},audio:false}); if (generation !== state.generation) { state.stream.getTracks().forEach(t => t.stop()); return; } source.srcObject = state.stream; state.stream.getVideoTracks()[0].onended = () => { recordedAbort?.('Camera disconnected before recording completed.'); stopMonitoring(); }; }
     await source.play(); if (generation !== state.generation) return;
-    canvas.width = Math.min(1280, source.videoWidth); canvas.height = Math.round(canvas.width * source.videoHeight/source.videoWidth); capture.width = canvas.width; capture.height = canvas.height;
     state.active = true; $('monitor').hidden = false; $('feedEmpty').hidden = true; $('sourceTag').textContent = file ? 'VIDEO FILE' : 'LIVE CAMERA'; $('sourceName').textContent = file?.name || 'Live camera feed'; $('monitorStatus').textContent = '● DETECTION ACTIVE'; $('feedState').textContent = 'Analyzing video'; sourceControls(false); detect();
   } catch (error) { releaseSource(); sourceControls(false); $('feedState').textContent = 'Source unavailable'; notify(`Could not start video: ${error.message}`, true); }
 }
@@ -132,25 +131,43 @@ $('upload').onchange = event => { const file = event.target.files[0]; if (file) 
 source.onended = () => { if (state.recording) recordedAbort?.('The source video ended before 8 seconds could be captured. Use footage with at least 8 seconds after detection.'); state.active = false; $('monitorStatus').textContent = 'VIDEO ENDED'; $('feedState').textContent = 'Video complete — choose another source'; $('stopButton').disabled = true; };
 async function detect() {
   if (!state.active || state.recording || state.detecting) return;
-  const generation = state.generation; state.detecting = true;
+  const generation = state.generation; state.detecting = true; let pausedForInference = false;
   try {
     const started = performance.now();
-    const frames = [];
-    for (let sample = 0; sample < 3; sample++) {
-      if (generation !== state.generation || !state.active || source.readyState < 2) return;
-      captureCtx.drawImage(source,0,0,capture.width,capture.height);
-      frames.push(capture.toDataURL('image/jpeg',.7));
-      if (sample < 2) await new Promise(resolve => setTimeout(resolve,160));
+    if (source.readyState < 2 || !source.videoWidth || !source.videoHeight) return;
+    const width = Math.min(1280, source.videoWidth);
+    const height = Math.max(1, Math.round(width * source.videoHeight / source.videoWidth));
+    if (capture.width !== width || capture.height !== height || canvas.width !== width || canvas.height !== height) {
+      capture.width = canvas.width = width;
+      capture.height = canvas.height = height;
     }
-    const data = await api('/api/detect', {method:'POST', body:form({frames_json:JSON.stringify(frames), conf:Number($('confidence').value)/100, return_annotated:false, location:$('location').value.trim() || 'Location not provided'})});
+    captureCtx.drawImage(source,0,0,capture.width,capture.height);
+    const frame = capture.toDataURL('image/jpeg',.7);
+    const uploadedVideo = Boolean(state.url);
+    const shortEvidence = uploadedVideo && Number.isFinite(source.duration) && source.duration - source.currentTime < 8.25;
+    if (uploadedVideo) { source.pause(); pausedForInference = true; }
+    const data = await api('/api/detect', {method:'POST', body:form({base64_image:frame, live_camera:!uploadedVideo, preview_only:shortEvidence, imgsz:Number($('inferenceSize').value), conf:Number($('confidence').value)/100, return_annotated:false, location:$('location').value.trim() || 'Location not provided'})});
     if (generation !== state.generation || !state.active) { if (data.incident) await api(`/api/incidents/${data.incident.id}/recording-failed`, {method:'POST'}); return; }
-    state.boxes = data.detections; $('inference').textContent = `${Math.round(performance.now()-started)} ms inference`; $('feedState').textContent = data.summary.accident_detected ? 'Possible accident — repeated across frames' : data.summary.candidate_detected ? 'Unconfirmed accident candidate' : 'Monitoring traffic';
-    if (data.incident) { await refresh(); await recordIncident(data.incident); }
+    state.boxes = data.detections; $('inference').textContent = `${Math.round(performance.now()-started)} ms inference`; $('feedState').textContent = data.summary.accident_detected ? 'Possible accident detected' : 'Monitoring traffic';
+    if (data.summary.accident_detected && shortEvidence && !state.shortCaptureWarning) {
+      state.shortCaptureWarning = true;
+      notify('Accident prediction shown. This source needs at least 8 seconds remaining to save evidence.');
+    }
+    if (data.incident) {
+      if (pausedForInference) { await source.play(); pausedForInference = false; }
+      const recording = recordIncident(data.incident); await refresh(); await recording;
+    }
   } catch (error) { $('feedState').textContent = 'Detection unavailable'; notify(`Detection: ${error.message}`, true); }
-  finally { state.detecting = false; if (state.active) state.timer = setTimeout(detect, 700); }
+  finally {
+    if (pausedForInference && generation === state.generation && state.active && !state.recording) {
+      try { await source.play(); } catch { $('feedState').textContent = 'Video playback paused'; }
+    }
+    state.detecting = false;
+    if (state.active) state.timer = setTimeout(detect, 700);
+  }
 }
 async function recordIncident(incident) {
-  state.recording = true; sourceControls(true); $('recording').hidden = false; $('recordProgress').style.width = '0%'; $('recordingText').textContent = 'Recording · 8 seconds remaining'; notify('Possible accident seen across frames. Capturing evidence for review.');
+  state.recording = true; sourceControls(true); $('recording').hidden = false; $('recordProgress').style.width = '0%'; $('recordingText').textContent = 'Recording · 8 seconds remaining'; notify('Possible accident detected. Capturing evidence for review.');
   let recordStream, ticker;
   try {
     const mime = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/mp4','video/webm'].find(type => MediaRecorder.isTypeSupported(type));

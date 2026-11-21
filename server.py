@@ -8,7 +8,7 @@ import subprocess
 import uuid
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from typing import Annotated, Optional, List
 from collections import deque
 
 import cv2
@@ -22,6 +22,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Fil
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
+from backend.frames import dashboard_frame, decode_image
+from backend.detection import DEFAULT_CONFIDENCE, DEFAULT_IMAGE_SIZE, detect_frame
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("acciden_server")
@@ -511,54 +513,30 @@ async def handle_ping(sid, data):
 
 
 # ==============================================================================
-# Model Detection Processing (UNTOUCHED AND UNALTERED)
+# Model Detection Processing
 # ==============================================================================
-def process_cv2_frame(frame: np.ndarray, conf: float = 0.25, iou: float = 0.45, imgsz: int = 320):
+def process_cv2_frame(frame: np.ndarray, conf: float = DEFAULT_CONFIDENCE, iou: Optional[float] = None, imgsz: int = DEFAULT_IMAGE_SIZE, *, live_camera: bool = False):
     model = get_model()
     start_t = time.time()
     h, w = frame.shape[:2]
 
-    results = model(frame, conf=conf, iou=iou, imgsz=imgsz, verbose=False)
+    options = {} if iou is None else {'iou': iou}
+    detections, used_size = detect_frame(model, frame, conf, imgsz, live_camera=live_camera, **options)
     inf_time_ms = (time.time() - start_t) * 1000
 
-    detections = []
-    accident_found = False
-    max_acc_conf = 0.0
-    accident_count = 0
-    vehicle_count = 0
-
-    for r in results:
-        for box in r.boxes:
-            cls_id = int(box.cls[0])
-            cls_name = model.names.get(cls_id, f"class_{cls_id}")
-            confidence = float(box.conf[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-            # Bound within frame
-            x1 = max(0, min(w - 1, x1))
-            y1 = max(0, min(h - 1, y1))
-            x2 = max(0, min(w - 1, x2))
-            y2 = max(0, min(h - 1, y2))
-
-            is_accident = (cls_name.lower() == "accident")
-            if is_accident:
-                accident_found = True
-                accident_count += 1
-                if confidence > max_acc_conf:
-                    max_acc_conf = confidence
-            else:
-                vehicle_count += 1
-
-            detections.append({
-                "class_id": cls_id,
-                "class_name": cls_name,
-                "confidence": round(confidence, 4),
-                "confidence_pct": round(confidence * 100, 1),
-                "is_accident": is_accident,
-                "bbox": [x1, y1, x2, y2],
-                "bbox_norm": [round(x1 / w, 4), round(y1 / h, 4), round(x2 / w, 4), round(y2 / h, 4)],
-                "severity": "CRITICAL" if (is_accident and confidence > 0.5) else ("WARNING" if is_accident else "NORMAL")
-            })
+    accidents = [box for box in detections if box['is_accident']]
+    accident_count = len(accidents)
+    vehicle_count = len(detections) - accident_count
+    accident_found = bool(accidents)
+    max_acc_conf = max((box['confidence'] for box in accidents), default=0.0)
+    for box in detections:
+        x1, y1, x2, y2 = box['bbox']
+        x1, x2 = (max(0, min(w - 1, x)) for x in (x1, x2))
+        y1, y2 = (max(0, min(h - 1, y)) for y in (y1, y2))
+        box['bbox'] = [x1, y1, x2, y2]
+        box['bbox_norm'] = [round(x1 / w, 4), round(y1 / h, 4), round(x2 / w, 4), round(y2 / h, 4)]
+        box['severity'] = ("CRITICAL" if box['confidence'] > 0.5 else "WARNING") if box['is_accident'] else "NORMAL"
+        box['confidence'] = round(box['confidence'], 4)
 
     # Update system stats
     stats["total_inferences"] += 1
@@ -573,6 +551,7 @@ def process_cv2_frame(frame: np.ndarray, conf: float = 0.25, iou: float = 0.45, 
         "accidents_count": accident_count,
         "vehicles_count": vehicle_count,
         "severity_level": "LEVEL-1 CRITICAL" if accident_found and max_acc_conf >= 0.5 else ("LEVEL-2 WARNING" if accident_found else "ALL CLEAR"),
+        "inference_size": used_size,
         "frame_width": w,
         "frame_height": h,
         "inference_ms": round(inf_time_ms, 2)
@@ -609,36 +588,29 @@ async def get_status():
 
 @app.get("/api/build-info")
 async def build_info():
-    return {"build": "admin-only-nav-5", "folder": BASE_DIR}
+    return {"build": "camera-frame-2", "folder": BASE_DIR}
 
 
 @app.post("/api/detect")
 async def detect_api(
     file: Optional[UploadFile] = File(None),
     base64_image: Optional[str] = Form(None),
-    conf: float = Form(0.25),
-    iou: float = Form(0.45),
-    imgsz: int = Form(320),
+    conf: float = Form(DEFAULT_CONFIDENCE),
+    iou: Optional[float] = Form(None),
+    imgsz: int = Form(DEFAULT_IMAGE_SIZE),
     return_annotated: bool = Form(True),
-    location: str = Form("Location not provided")
+    location: str = Form("Location not provided"),
+    preview_only: Annotated[bool, Form()] = False,
+    frames_json: Annotated[str, Form()] = "",
+    live_camera: Annotated[bool, Form()] = False
 ):
     try:
-        frame = None
         if file is not None:
-            contents = await file.read()
-            nparr = np.frombuffer(contents, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        elif base64_image:
-            if "," in base64_image:
-                base64_image = base64_image.split(",")[1]
-            img_data = base64.b64decode(base64_image)
-            nparr = np.frombuffer(img_data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            frame = decode_image(await file.read())
+        else:
+            frame = dashboard_frame(base64_image, frames_json)
 
-        if frame is None:
-            raise HTTPException(status_code=400, detail="Invalid image data provided")
-
-        detections, summary = process_cv2_frame(frame, conf=conf, iou=iou, imgsz=imgsz)
+        detections, summary = process_cv2_frame(frame, conf=conf, iou=iou, imgsz=imgsz, live_camera=live_camera)
 
         annotated_frame = frame.copy()
         for d in detections:
@@ -671,7 +643,7 @@ async def detect_api(
         incident_record = None
         global last_server_accident_time
         now_ts = time.time()
-        if summary["accident_detected"] and (now_ts - last_server_accident_time > 12.0):
+        if summary["accident_detected"] and not preview_only and (now_ts - last_server_accident_time > 12.0):
             last_server_accident_time = now_ts
             incident_id = f"INC-{uuid.uuid4().hex[:12].upper()}"
 
@@ -710,6 +682,8 @@ async def detect_api(
             "detections": detections,
             "annotated_image": annotated_b64
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error in /api/detect")
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,40 +1,43 @@
-"""Separate model candidates from spatially consistent multi-frame alerts."""
+"""YOLO accident detection shared by the local and cloud servers."""
+
+DEFAULT_CONFIDENCE = 0.25
+DEFAULT_IMAGE_SIZE = 320
 
 
-def overlap(first, second):
-    left, top = max(first[0], second[0]), max(first[1], second[1])
-    right, bottom = min(first[2], second[2]), min(first[3], second[3])
-    intersection = max(0, right-left) * max(0, bottom-top)
-    first_area = max(0, first[2]-first[0]) * max(0, first[3]-first[1])
-    second_area = max(0, second[2]-second[0]) * max(0, second[3]-second[1])
-    union = first_area + second_area - intersection
-    return intersection / union if union else 0
+def detect_frame(model, frame, conf=DEFAULT_CONFIDENCE, imgsz=DEFAULT_IMAGE_SIZE, *, live_camera=False, **options):
+    detections = _predict_boxes(model, frame, conf, imgsz, options)
+    if live_camera and imgsz == DEFAULT_IMAGE_SIZE and not detections:
+        imgsz = 640
+        detections = _predict_boxes(model, frame, conf, imgsz, options)
+    return detections, imgsz
 
 
-def summarize_sequence(sequence):
-    """Require the latest accident region to match at least one prior sample.
+def _predict_boxes(model, frame, conf, imgsz, options):
+    detections = []
+    for result in model(frame, conf=conf, imgsz=imgsz, verbose=False, **options):
+        for box in result.boxes:
+            class_id = int(box.cls[0])
+            name = model.names[class_id]
+            score = float(box.conf[0])
+            detections.append({
+                'class_id': class_id, 'class_name': name, 'is_accident': name == 'accident',
+                'confidence': score, 'confidence_pct': round(score * 100, 1),
+                'bbox': [int(value) for value in box.xyxy[0]],
+            })
+    return detections
 
-    This rejects isolated/jumping predictions. It cannot establish a real
-    collision or reject a stable false positive without better model training.
-    """
-    latest = [dict(box) for box in sequence[-1]] if sequence else []
-    for candidate in latest:
-        hits = 1 if candidate['is_accident'] else 0
-        if candidate['is_accident']:
-            for earlier in sequence[:-1]:
-                if any(box['is_accident'] and overlap(candidate['bbox'], box['bbox']) >= .25 for box in earlier):
-                    hits += 1
-        candidate['confirmation_frames'] = hits
-        candidate['confirmed'] = candidate['is_accident'] and len(sequence) >= 3 and hits >= 2
-    confirmed = [box for box in latest if box['confirmed']]
-    candidates = [box for box in latest if box['is_accident']]
-    return latest, {
-        'accident_detected': bool(confirmed),
-        'candidate_detected': bool(candidates),
-        'max_accident_confidence': max((box['confidence_pct'] for box in confirmed), default=0),
-        'max_candidate_confidence': max((box['confidence_pct'] for box in candidates), default=0),
-        'vehicles_count': sum(box.get('class_name') == 'vehicle' for box in latest),
-        'frames_analyzed': len(sequence),
-        'confirmation_rule': 'latest region matches at least 2 of 3 frames',
-        'inference_size': 512,
+
+def summarize_frame(detections, conf, imgsz):
+    accidents = [box for box in detections if box['is_accident']]
+    peak = max((box['confidence_pct'] for box in accidents), default=0)
+    return {
+        'accident_detected': bool(accidents),
+        'candidate_detected': bool(accidents),
+        'max_accident_confidence': peak,
+        'max_candidate_confidence': peak,
+        'vehicles_count': len(detections) - len(accidents),
+        'frames_analyzed': 1,
+        'confirmation_rule': 'accident class detected in the current frame',
+        'minimum_alert_confidence': round(conf * 100, 1),
+        'inference_size': imgsz,
     }

@@ -1,18 +1,17 @@
 """Stateless Vercel API. Vercel Blob holds records and private evidence objects."""
-import base64
 import os
 import re
 import tempfile
 import time
 import uuid
 import logging
-import json
 import threading
 from pathlib import Path
 from urllib.request import urlopen
 
 from backend import storage
-from backend.detection import summarize_sequence
+from backend.detection import DEFAULT_CONFIDENCE, DEFAULT_IMAGE_SIZE, detect_frame, summarize_frame
+from backend.frames import dashboard_frame
 from backend.evidence import finalize_recording
 from fastapi import FastAPI, HTTPException, Request, Form, File, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -53,7 +52,8 @@ def video_url(incident_id):
 @app.get('/api/status')
 def status():
     return {'status': 'online', 'storage': 'vercel-blob', 'model_loaded': model is not None,
-            'inference_size': 512, 'confirmation': '2 of 3 matching frames'}
+            'inference_size': DEFAULT_IMAGE_SIZE, 'default_confidence': DEFAULT_CONFIDENCE,
+            'confirmation': 'single frame'}
 
 
 @app.get('/api/response/{agency}/incidents')
@@ -104,46 +104,18 @@ def get_detection_model():
 
 @app.post('/api/detect')
 def detect(base64_image: str = Form(''), frames_json: str = Form(''),
-           conf: float = Form(.5), location: str = Form('Location not provided'),
-           preview_only: bool = Form(False)):
-    import cv2
-    import numpy as np
-    try:
-        encoded_frames = json.loads(frames_json) if frames_json else [base64_image]
-    except (ValueError, TypeError):
-        raise HTTPException(400, 'Invalid frame sequence')
-    if not isinstance(encoded_frames, list) or len(encoded_frames) not in (1, 3):
-        raise HTTPException(400, 'Send exactly three frames to confirm an accident')
-    if any(not isinstance(frame, str) or not frame for frame in encoded_frames):
-        raise HTTPException(400, 'Invalid image frame')
-    if sum(map(len, encoded_frames)) > 2_800_000:
-        raise HTTPException(413, 'Frame sequence too large; use a lower source resolution')
-    frames = []
-    for encoded in encoded_frames:
-        try:
-            decoded = base64.b64decode(encoded.split(',')[-1], validate=True)
-            frame = cv2.imdecode(np.frombuffer(decoded, np.uint8), cv2.IMREAD_COLOR)
-        except Exception:
-            raise HTTPException(400, 'Invalid image frame')
-        if frame is None:
-            raise HTTPException(400, 'Invalid image frame')
-        frames.append(frame)
-    if any(frame.shape != frames[0].shape for frame in frames):
-        raise HTTPException(400, 'All samples must come from the same video source')
+           conf: float = Form(DEFAULT_CONFIDENCE), imgsz: int = Form(DEFAULT_IMAGE_SIZE), location: str = Form('Location not provided'),
+           preview_only: bool = Form(False), live_camera: bool = Form(False)):
+    if imgsz not in (320, 512, 640):
+        raise HTTPException(400, 'Choose 320, 512, or 640 for inference resolution')
+    frame = dashboard_frame(base64_image, frames_json, max_chars=2_800_000)
+    conf = max(.1, min(.9, conf))
     with model_lock:
-        detector = get_detection_model()
-        results = list(detector.predict(frames, conf=max(.1, min(.9, conf)),
-                                        imgsz=512, verbose=False, device='cpu'))
-        sequence = []
-        for result in results:
-            boxes = []
-            for box in result.boxes:
-                label = detector.names[int(box.cls[0])].strip().lower()
-                boxes.append({'class_name': label, 'bbox': box.xyxy[0].tolist(),
-                              'confidence_pct': round(float(box.conf[0])*100, 1),
-                              'is_accident': label == 'accident'})
-            sequence.append(boxes)
-    detections, summary = summarize_sequence(sequence)
+        detections, imgsz = detect_frame(get_detection_model(), frame, conf, imgsz, live_camera=live_camera, device='cpu')
+    for box in detections:
+        box['confirmed'] = box['is_accident']
+        box['confirmation_frames'] = int(box['is_accident'])
+    summary = summarize_frame(detections, conf, imgsz)
     incident = None
     if summary['accident_detected'] and not preview_only:
         incident_id = 'INC-' + uuid.uuid4().hex

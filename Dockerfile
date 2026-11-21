@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py ./
+COPY backend/detection.py backend/frames.py ./backend/
 COPY static ./static
 COPY model ./model
 # Fail clearly when a hosting service checks out an LFS pointer instead of weights.
