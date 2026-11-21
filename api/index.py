@@ -62,10 +62,14 @@ def incidents(agency: str):
         raise HTTPException(404, 'Unknown agency')
     rows = sorted(storage.rows(), key=lambda row: row['payload'].get('timestamp', ''), reverse=True)
     items = []
+    # During upload a late recording may still arrive. Report only what storage has.
+    overdue = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 600))
     for row in rows:
-        item = row['payload']
+        item = row['payload'].copy()
         if item.get('has_clip') and item.get('object_path'):
             item['clip_url'] = video_url(item['id'])
+        elif item.get('status') == 'RECORDING_EVIDENCE' and item.get('timestamp', overdue) < overdue:
+            item['status'] = 'EVIDENCE_MISSING'
         items.append(item)
     return {'success': True, 'incidents': items}
 
@@ -131,8 +135,10 @@ def detect(base64_image: str = Form(''), frames_json: str = Form(''),
 @app.post('/api/clips/upload')
 def upload(incident_id: str = Form(...), video_file: UploadFile = File(...)):
     row = record(incident_id)
-    if row['payload'].get('has_clip') or row['payload'].get('video_deleted'):
-        raise HTTPException(409, 'Evidence already uploaded or deleted')
+    if row['payload'].get('video_deleted'):
+        raise HTTPException(409, 'Evidence deleted')
+    if row['payload'].get('has_clip') and row['payload'].get('object_path'):
+        return {'success': True}
     contents = video_file.file.read(3_000_001)
     if not 512 <= len(contents) <= 3_000_000:
         raise HTTPException(413, 'Recording must be between 512 bytes and 3 MB')
@@ -144,8 +150,12 @@ def upload(incident_id: str = Form(...), video_file: UploadFile = File(...)):
         update(row, {'has_clip': True, 'object_path': object_path, 'clip_bytes': len(contents),
                      'clip_duration': duration, 'status': 'AWAITING_CONFIRMATION'})
     except Exception:
-        storage.delete_video(object_path)
-        raise
+        # A write can succeed even if its acknowledgement or lease release fails.
+        current = record(incident_id)['payload']
+        if current.get('object_path') != object_path:
+            storage.delete_video(object_path)
+        if not current.get('has_clip') or not current.get('object_path') or current.get('video_deleted'):
+            raise
     return {'success': True}
 
 

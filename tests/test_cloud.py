@@ -2,7 +2,7 @@ import os
 import unittest
 import copy
 from contextlib import nullcontext
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from api.index import app, update
 from fastapi import HTTPException
@@ -49,6 +49,49 @@ class CloudAPI(unittest.TestCase):
             self.assertEqual(response.status_code, 502)
             self.assertEqual(write.call_count, 1)
             self.assertNotIn('object_path', write.call_args.args[1])
+
+    def test_manifest_requests_latest_private_blob(self):
+        from backend import storage
+        with patch.dict(os.environ, {'BLOB_READ_WRITE_TOKEN': 'test'}), \
+                patch.object(storage.blob, 'head_blob', return_value=Mock(url='https://example.test/manifest')), \
+                patch.object(storage.httpx, 'get') as fetch:
+            fetch.return_value.json.return_value = {'rows': {}}
+            self.assertEqual(storage.load(), {'rows': {}})
+            self.assertEqual(fetch.call_args.kwargs['params'], {'cache': '0'})
+
+    def test_missing_recording_status_preserves_incident_and_allows_late_evidence(self):
+        pending = {'id': 'INC-late', 'status': 'RECORDING_EVIDENCE', 'timestamp': '2020-01-01 00:00:00'}
+        with patch('backend.storage.rows', return_value=[{'payload': pending}]):
+            for team in ('ambulance', 'police'):
+                items = self.client.get(f'/api/response/{team}/incidents').json()['incidents']
+                self.assertEqual(items[0]['status'], 'EVIDENCE_MISSING')
+        self.assertEqual(pending['status'], 'RECORDING_EVIDENCE')
+
+    def test_retry_after_upload_acknowledgement_is_lost_preserves_clip(self):
+        pending = {'id': 'INC-retry', 'version': 0, 'payload': {'has_clip': False}}
+        complete = {'id': 'INC-retry', 'version': 1, 'payload': {'has_clip': True}}
+        def published_then_failed(row, changes):
+            complete['payload'].update(changes)
+            raise TimeoutError('lease release timed out after publication')
+
+        files = {'video_file': ('capture.webm', b'example' * 100, 'video/webm')}
+        with patch('api.index.record', side_effect=[pending, complete, complete]), \
+                patch('api.index.finalize_recording', return_value=(b'mp4', 8.0)), \
+                patch('backend.storage.put_video') as put, patch('backend.storage.delete_video') as delete, \
+                patch('api.index.update', side_effect=published_then_failed):
+            for attempt in range(2):
+                result = self.client.post('/api/clips/upload', data={'incident_id': 'INC-retry'}, files=files)
+                self.assertEqual(result.status_code, 200, result.text)
+            put.assert_called_once()
+            delete.assert_not_called()
+
+    def test_upload_retry_cannot_restore_deleted_video(self):
+        with patch('api.index.record', return_value={'payload': {'video_deleted': True}}), \
+                patch('backend.storage.put_video') as put:
+            result = self.client.post('/api/clips/upload', data={'incident_id': 'INC-deleted'},
+                                      files={'video_file': ('capture.webm', b'example' * 100, 'video/webm')})
+            self.assertEqual(result.status_code, 409)
+            put.assert_not_called()
 
     def test_separate_clients_share_video_decisions_and_admin_deletion(self):
         # Two independent browser clients read the same persistent manifest.

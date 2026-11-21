@@ -2,7 +2,6 @@
 import json
 import os
 import time
-import uuid
 from contextlib import contextmanager
 
 import httpx
@@ -22,7 +21,7 @@ def read_json(path, default=None):
     token = os.getenv('BLOB_READ_WRITE_TOKEN', '')
     if not token:
         raise HTTPException(503, 'Connect a private Blob store and set BLOB_READ_WRITE_TOKEN')
-    response = httpx.get(metadata.url, params={'version': uuid.uuid4().hex},
+    response = httpx.get(metadata.url, params={'cache': '0'},
                         headers={'Authorization': 'Bearer ' + token, 'Cache-Control': 'no-cache'}, timeout=30)
     response.raise_for_status()
     return response.json()

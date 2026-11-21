@@ -20,8 +20,8 @@ async function api(url, options = {}) {
   const body = await response.text();
   let data;
   try { data = JSON.parse(body); }
-  catch { throw new Error(`The backend returned an invalid response (HTTP ${response.status}). Check the Vercel runtime logs.`); }
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status})`);
+  catch { throw Object.assign(new Error(`The backend returned an invalid response (HTTP ${response.status}). Check the Vercel runtime logs.`), {status: response.status}); }
+  if (!response.ok) throw Object.assign(new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status})`), {status: response.status});
   return data;
 }
 function form(values) { const data = new FormData(); Object.entries(values).forEach(([key, value]) => data.append(key, value)); return data; }
@@ -70,7 +70,7 @@ function render() {
   $('incidentCount').textContent = items.length;
   const query = $('search').value.toLowerCase(), filter = $('filter').value;
   const filtered = items.filter(i => `${i.id} ${i.location || ''}`.toLowerCase().includes(query)).filter(i => filter === 'all' || (filter === 'ready' && i.has_clip) || (filter === 'pending' && agencies.some(a => responseStatus(i, a) === 'PENDING')) || (filter === 'dispatched' && agencies.some(a => responseStatus(i, a) === 'DISPATCHED')));
-  $('incidentRows').innerHTML = filtered.map(i => `<tr class="${i.id === state.selected ? 'selected' : ''}" data-id="${escapeHTML(i.id)}"><td><b>${escapeHTML(i.id)}</b><small>${escapeHTML(i.timestamp)}</small>${state.view === 'vision' && (i.has_clip || i.object_path) ? `<button class="delete-video-button" data-delete-video="${escapeHTML(i.id)}">Delete video</button>` : ''}</td><td>${escapeHTML(i.location || 'Location not provided')}</td><td>${typeof i.confidence === 'number' ? `${i.confidence.toFixed(1)}%` : '—'}</td><td>${pill(i.has_clip ? 'READY' : 'PENDING', i.has_clip ? '8s · ready' : i.status === 'RECORDING_FAILED' ? 'Recording failed' : i.status === 'RECORDING_EVIDENCE' ? 'Recording…' : 'Awaiting video')}</td><td>${pill(responseStatus(i, 'ambulance'))}</td><td>${pill(responseStatus(i, 'police'))}</td><td><button class="review-button" data-id="${escapeHTML(i.id)}">Review</button></td></tr>`).join('');
+  $('incidentRows').innerHTML = filtered.map(i => `<tr class="${i.id === state.selected ? 'selected' : ''}" data-id="${escapeHTML(i.id)}"><td><b>${escapeHTML(i.id)}</b><small>${escapeHTML(i.timestamp)}</small>${state.view === 'vision' && (i.has_clip || i.object_path) ? `<button class="delete-video-button" data-delete-video="${escapeHTML(i.id)}">Delete video</button>` : ''}</td><td>${escapeHTML(i.location || 'Location not provided')}</td><td>${typeof i.confidence === 'number' ? `${i.confidence.toFixed(1)}%` : '—'}</td><td>${pill(i.has_clip ? 'READY' : 'PENDING', i.has_clip ? '8s · ready' : i.status === 'EVIDENCE_MISSING' ? 'No video received' : i.status === 'RECORDING_FAILED' ? 'Recording failed' : i.status === 'RECORDING_EVIDENCE' ? 'Recording…' : 'Awaiting video')}</td><td>${pill(responseStatus(i, 'ambulance'))}</td><td>${pill(responseStatus(i, 'police'))}</td><td><button class="review-button" data-id="${escapeHTML(i.id)}">Review</button></td></tr>`).join('');
   $('tableEmpty').hidden = filtered.length > 0;
   $('tableEmpty').querySelector('h3').textContent = items.length ? 'No incidents match this view.' : "All clear. We're watching with you.";
   $('tableEmpty').querySelector('p').textContent = items.length ? 'Try another search or filter.' : 'Detected incidents will appear here, ready for both response teams.';
@@ -87,8 +87,8 @@ function renderReview() {
   const url = incident.has_clip && incident.clip_url ? backendUrl(incident.clip_url) : null;
   if (currentEvidence !== url) { $('evidence').pause(); if (url) $('evidence').src = url; else { $('evidence').removeAttribute('src'); $('evidence').load(); } currentEvidence = url; $('evidence').playbackRate = 1; $('slowButton').textContent = '0.5× slow motion'; }
   $('evidence').hidden = !url; $('evidenceEmpty').hidden = !!url;
-  $('evidenceEmpty').querySelector('h3').textContent = incident.video_deleted ? 'Video deleted by Admin' : incident.status === 'RECORDING_FAILED' ? 'Evidence recording failed' : 'Evidence is on its way';
-  $('evidenceEmpty').querySelector('p').textContent = incident.video_deleted ? 'The saved video was removed to free storage. Incident history is retained.' : incident.status === 'RECORDING_FAILED' ? 'The source ended or recording failed. Review is unavailable without a playable clip.' : 'The detection workspace is recording and uploading the 8-second clip. This view refreshes automatically.';
+  $('evidenceEmpty').querySelector('h3').textContent = incident.video_deleted ? 'Video deleted by Admin' : incident.status === 'EVIDENCE_MISSING' ? 'No video received' : incident.status === 'RECORDING_FAILED' ? 'Evidence recording failed' : 'Waiting for evidence';
+  $('evidenceEmpty').querySelector('p').textContent = incident.video_deleted ? 'The saved video was removed to free storage. Incident history is retained.' : incident.status === 'EVIDENCE_MISSING' ? 'The recording did not reach this incident. A later upload will appear here automatically.' : incident.status === 'RECORDING_FAILED' ? 'The source ended or recording failed. Review is unavailable without a playable clip.' : 'The detection workspace is recording and uploading the 8-second clip. This view refreshes automatically.';
   $('slowButton').disabled = !url; $('frameButton').disabled = !url; $('download').hidden = !url; if (url) $('download').href = url;
   const status = responseStatus(incident, state.view), pending = status === 'PENDING';
   $('reviewActions').hidden = !url || (status !== 'PENDING' && status !== 'DISPATCHED');
@@ -166,6 +166,18 @@ async function detect() {
     if (state.active) state.timer = setTimeout(detect, 700);
   }
 }
+async function uploadEvidence(body) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await api('/api/clips/upload', {method: 'POST', body});
+    } catch (error) {
+      const retryable = error instanceof TypeError || [404, 408, 429].includes(error.status) || error.status >= 500;
+      if (!retryable || attempt >= 3) throw error;
+      $('recordingText').textContent = `Retrying evidence upload · attempt ${attempt + 1} of 3`;
+      await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+    }
+  }
+}
 async function recordIncident(incident) {
   state.recording = true; sourceControls(true); $('recording').hidden = false; $('recordProgress').style.width = '0%'; $('recordingText').textContent = 'Recording · 8 seconds remaining'; notify('Possible accident detected. Capturing evidence for review.');
   let recordStream, ticker;
@@ -188,7 +200,7 @@ async function recordIncident(incident) {
     });
     recordedAbort = null; recordStream.getTracks().forEach(t => t.stop()); $('recordProgress').style.width = '100%'; $('recordingText').textContent = 'Uploading to both dashboards…';
     const body = form({incident_id:incident.id,confidence:incident.confidence,location:incident.location,vehicles_count:incident.vehicles_involved}); body.append('video_file',blob,`evidence.${mime.includes('mp4') ? 'mp4' : 'webm'}`);
-    await api('/api/clips/upload',{method:'POST',body}); notify('8-second evidence delivered to Ambulance and Police.');
+    await uploadEvidence(body); notify('8-second evidence delivered to Ambulance and Police.');
   } catch (error) { notify(`Evidence failed: ${error.message}`,true); try { await api(`/api/incidents/${incident.id}/recording-failed`,{method:'POST'}); } catch {} }
   finally { clearInterval(ticker); recordedAbort = null; recordStream?.getTracks().forEach(t => t.stop()); state.recording = false; $('recording').hidden = true; sourceControls(false); await refresh(); }
 }

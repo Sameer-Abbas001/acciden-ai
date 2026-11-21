@@ -69,3 +69,26 @@ test('Admin incident rows expose delete next to the incident ID', () => {
   vm.runInNewContext('render();', context);
   assert.doesNotMatch(elements.incidentRows.innerHTML, /data-delete-video/);
 });
+
+test('evidence upload retries the original recording after a temporary failure', async () => {
+  const source = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
+  const upload = source.slice(source.indexOf('async function uploadEvidence('), source.indexOf('async function recordIncident('));
+  for (const [status, expectedAttempts] of [[404, 2], [503, 2], [422, 1]]) {
+    const body = { incident_id: 'INC-test', video_file: 'same recording' };
+    let calls = 0;
+    const context = vm.createContext({
+      body, $: () => ({}), setTimeout: fn => fn(),
+      api: async (url, options) => {
+        calls++;
+        assert.equal(url, '/api/clips/upload');
+        assert.equal(options.body, body);
+        if (calls === 1) throw Object.assign(new Error('upload error'), {status});
+        return {success: true};
+      },
+    });
+    const result = vm.runInContext(upload + '; uploadEvidence(body)', context);
+    if (status === 422) await assert.rejects(result, /upload error/);
+    else assert.equal((await result).success, true);
+    assert.equal(calls, expectedAttempts);
+  }
+});

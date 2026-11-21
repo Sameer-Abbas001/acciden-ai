@@ -68,6 +68,7 @@ stats = {
 recent_camera_frames = deque(maxlen=240)
 recent_annotated_camera_frames = deque(maxlen=240)
 last_server_accident_time = 0.0
+active_clip_uploads = set()
 
 # Ambulance Fleet Live Telemetry Database
 ambulance_fleet = [
@@ -712,10 +713,19 @@ async def upload_camera_clip(
     out_mp4 = os.path.join(CLIPS_DIR, f"clip_{safe_incident_id}.mp4")
     web_url = f"/static/clips/clip_{safe_incident_id}.mp4"
 
+    if safe_incident_id in active_clip_uploads:
+        raise HTTPException(503, "This recording is already being processed. Retry shortly.")
+    active_clip_uploads.add(safe_incident_id)
     try:
         contents = await video_file.read()
         if not contents or len(contents) < 512:
             raise HTTPException(status_code=400, detail="The browser recording is empty or too small")
+
+        existing = next((inc for inc in incidents_db if inc["id"] == safe_incident_id), None)
+        if existing and existing.get("video_deleted"):
+            raise HTTPException(409, "Evidence deleted")
+        if existing and existing.get("has_clip") and os.path.isfile(out_mp4):
+            return {"success": True, "clip_url": web_url, "size_bytes": os.path.getsize(out_mp4)}
 
         # Keep the original recording with the correct container extension.
         content_type = (video_file.content_type or "").lower()
@@ -809,6 +819,7 @@ async def upload_camera_clip(
         logger.exception("Error in /api/clips/upload")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        active_clip_uploads.discard(safe_incident_id)
         if os.path.exists(temp_mp4):
             try:
                 os.remove(temp_mp4)
