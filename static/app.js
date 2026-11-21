@@ -106,7 +106,7 @@ $('confidence').oninput = () => $('confidenceValue').textContent = `${$('confide
 function paint() {
   if (state.active && source.readyState >= 2) {
     ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-    for (const box of state.boxes) { const [x1,y1,x2,y2] = box.bbox; ctx.strokeStyle = box.is_accident ? '#ff695e' : '#72e4bd'; ctx.lineWidth = 3; ctx.strokeRect(x1,y1,x2-x1,y2-y1); const label = `${box.is_accident ? 'ACCIDENT' : 'VEHICLE'} ${box.confidence_pct}%`; ctx.font = 'bold 15px sans-serif'; const width = ctx.measureText(label).width + 14; ctx.fillStyle = ctx.strokeStyle; ctx.fillRect(x1, Math.max(0,y1-26), width, 26); ctx.fillStyle = '#071212'; ctx.fillText(label,x1+7,Math.max(18,y1-8)); }
+    for (const box of state.boxes) { const [x1,y1,x2,y2] = box.bbox; ctx.strokeStyle = box.is_accident ? (box.confirmed === false ? '#ffc86e' : '#ff695e') : '#72e4bd'; ctx.lineWidth = 3; ctx.strokeRect(x1,y1,x2-x1,y2-y1); const label = `${box.is_accident ? (box.confirmed === false ? 'ACCIDENT CANDIDATE' : 'ACCIDENT') : 'VEHICLE'} ${box.confidence_pct}%`; ctx.font = 'bold 15px sans-serif'; const width = ctx.measureText(label).width + 14; ctx.fillStyle = ctx.strokeStyle; ctx.fillRect(x1, Math.max(0,y1-26), width, 26); ctx.fillStyle = '#071212'; ctx.fillText(label,x1+7,Math.max(18,y1-8)); }
     ctx.fillStyle = '#071212c9'; ctx.fillRect(8, canvas.height-30, 260, 24); ctx.fillStyle = '#fff'; ctx.font = '12px monospace'; ctx.fillText(new Date().toLocaleString(),16,canvas.height-13);
   }
   requestAnimationFrame(paint);
@@ -134,16 +134,23 @@ async function detect() {
   if (!state.active || state.recording || state.detecting) return;
   const generation = state.generation; state.detecting = true;
   try {
-    captureCtx.drawImage(source,0,0,capture.width,capture.height); const started = performance.now();
-    const data = await api('/api/detect', {method:'POST', body:form({base64_image:capture.toDataURL('image/jpeg',.75), conf:Number($('confidence').value)/100, return_annotated:false, location:$('location').value.trim() || 'Location not provided'})});
+    const started = performance.now();
+    const frames = [];
+    for (let sample = 0; sample < 3; sample++) {
+      if (generation !== state.generation || !state.active || source.readyState < 2) return;
+      captureCtx.drawImage(source,0,0,capture.width,capture.height);
+      frames.push(capture.toDataURL('image/jpeg',.7));
+      if (sample < 2) await new Promise(resolve => setTimeout(resolve,160));
+    }
+    const data = await api('/api/detect', {method:'POST', body:form({frames_json:JSON.stringify(frames), conf:Number($('confidence').value)/100, return_annotated:false, location:$('location').value.trim() || 'Location not provided'})});
     if (generation !== state.generation || !state.active) { if (data.incident) await api(`/api/incidents/${data.incident.id}/recording-failed`, {method:'POST'}); return; }
-    state.boxes = data.detections; $('inference').textContent = `${Math.round(performance.now()-started)} ms inference`; $('feedState').textContent = data.summary.accident_detected ? 'Accident detected' : 'Monitoring traffic';
+    state.boxes = data.detections; $('inference').textContent = `${Math.round(performance.now()-started)} ms inference`; $('feedState').textContent = data.summary.accident_detected ? 'Possible accident — repeated across frames' : data.summary.candidate_detected ? 'Unconfirmed accident candidate' : 'Monitoring traffic';
     if (data.incident) { await refresh(); await recordIncident(data.incident); }
   } catch (error) { $('feedState').textContent = 'Detection unavailable'; notify(`Detection: ${error.message}`, true); }
-  finally { state.detecting = false; if (state.active) state.timer = setTimeout(detect, 3000); }
+  finally { state.detecting = false; if (state.active) state.timer = setTimeout(detect, 700); }
 }
 async function recordIncident(incident) {
-  state.recording = true; sourceControls(true); $('recording').hidden = false; $('recordProgress').style.width = '0%'; $('recordingText').textContent = 'Recording · 8 seconds remaining'; notify('Accident detected. Capturing evidence for Ambulance and Police.');
+  state.recording = true; sourceControls(true); $('recording').hidden = false; $('recordProgress').style.width = '0%'; $('recordingText').textContent = 'Recording · 8 seconds remaining'; notify('Possible accident seen across frames. Capturing evidence for review.');
   let recordStream, ticker;
   try {
     const mime = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/mp4','video/webm'].find(type => MediaRecorder.isTypeSupported(type));

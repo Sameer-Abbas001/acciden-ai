@@ -115,3 +115,9 @@ vercel.json              Vercel build and routing configuration
 ## Prototype scope
 
 Dispatch actions are simulations; the app does not contact real emergency services. Locations are entered by the operator. The current app has no login or role-based API authorization: anyone who can access the deployment can use its dashboard actions. Recognition quality depends on the trained model and footage. Keep the monitoring page open during capture and upload.
+
+## Detection confirmation
+
+Cloud inference uses 512-pixel inputs, matching the checkpoint training size. Admin submits three closely spaced source frames. An incident requires an accident region in the latest frame to overlap a detection in at least one earlier frame (two of three samples). Isolated predictions remain amber candidates and do not create incidents. Model confidence is a detection score, not a verified probability of a real collision.
+
+The model weights are unchanged. This temporal filter reduces isolated predictions but cannot reject stable false positives or recover all missed accidents. Evaluating or retraining the model requires labeled accident and normal-traffic footage. The available indoor negative clip is not a representative validation set.

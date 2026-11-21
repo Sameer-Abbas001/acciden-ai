@@ -6,10 +6,13 @@ import tempfile
 import time
 import uuid
 import logging
+import json
+import threading
 from pathlib import Path
 from urllib.request import urlopen
 
 from backend import storage
+from backend.detection import summarize_sequence
 from backend.evidence import finalize_recording
 from fastapi import FastAPI, HTTPException, Request, Form, File, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -19,6 +22,7 @@ os.environ.setdefault('MPLCONFIGDIR', os.path.join(tempfile.gettempdir(), 'accid
 
 app = FastAPI()
 model = None
+model_lock = threading.Lock()
 
 
 @app.middleware('http')
@@ -48,7 +52,8 @@ def video_url(incident_id):
 
 @app.get('/api/status')
 def status():
-    return {'status': 'online', 'storage': 'vercel-blob', 'model_loaded': model is not None}
+    return {'status': 'online', 'storage': 'vercel-blob', 'model_loaded': model is not None,
+            'inference_size': 512, 'confirmation': '2 of 3 matching frames'}
 
 
 @app.get('/api/response/{agency}/incidents')
@@ -65,21 +70,12 @@ def incidents(agency: str):
     return {'success': True, 'incidents': items}
 
 
-@app.post('/api/detect')
-def detect(base64_image: str = Form(...), conf: float = Form(.5), location: str = Form('Location not provided')):
+def get_detection_model():
     global model
-    import cv2
-    import numpy as np
-    from ultralytics import YOLO
-    if len(base64_image) > 1500000:
-        raise HTTPException(413, 'Frame too large')
-    try:
-        frame = cv2.imdecode(np.frombuffer(base64.b64decode(base64_image.split(',')[-1], validate=True), np.uint8), cv2.IMREAD_COLOR)
-    except Exception:
-        raise HTTPException(400, 'Invalid frame')
-    if frame is None:
-        raise HTTPException(400, 'Invalid frame')
     if model is None:
+        from ultralytics import YOLO
+        import torch
+        torch.set_num_threads(1)
         target = Path(tempfile.gettempdir()) / 'acciden-epoch61.pt'
         if not target.exists():
             url = os.getenv('MODEL_URL', '')
@@ -103,28 +99,61 @@ def detect(base64_image: str = Form(...), conf: float = Form(.5), location: str 
             finally:
                 temporary.unlink(missing_ok=True)
         model = YOLO(str(target))
-    results = model(frame, conf=max(.1, min(.9, conf)), imgsz=320, verbose=False, device='cpu')
-    detections, highest, vehicles = [], 0.0, 0
-    for result in results:
-        for box in result.boxes:
-            label = model.names[int(box.cls[0])]
-            accident = 'accident' in label.lower() or 'collision' in label.lower() or 'crash' in label.lower()
-            score = round(float(box.conf[0]) * 100, 1)
-            highest = max(highest, score if accident else 0)
-            vehicles += int(not accident)
-            detections.append({'bbox': box.xyxy[0].tolist(), 'confidence_pct': score, 'is_accident': accident})
+    return model
+
+
+@app.post('/api/detect')
+def detect(base64_image: str = Form(''), frames_json: str = Form(''),
+           conf: float = Form(.5), location: str = Form('Location not provided'),
+           preview_only: bool = Form(False)):
+    import cv2
+    import numpy as np
+    try:
+        encoded_frames = json.loads(frames_json) if frames_json else [base64_image]
+    except (ValueError, TypeError):
+        raise HTTPException(400, 'Invalid frame sequence')
+    if not isinstance(encoded_frames, list) or len(encoded_frames) not in (1, 3):
+        raise HTTPException(400, 'Send exactly three frames to confirm an accident')
+    if any(not isinstance(frame, str) or not frame for frame in encoded_frames):
+        raise HTTPException(400, 'Invalid image frame')
+    if sum(map(len, encoded_frames)) > 2_800_000:
+        raise HTTPException(413, 'Frame sequence too large; use a lower source resolution')
+    frames = []
+    for encoded in encoded_frames:
+        try:
+            decoded = base64.b64decode(encoded.split(',')[-1], validate=True)
+            frame = cv2.imdecode(np.frombuffer(decoded, np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            raise HTTPException(400, 'Invalid image frame')
+        if frame is None:
+            raise HTTPException(400, 'Invalid image frame')
+        frames.append(frame)
+    if any(frame.shape != frames[0].shape for frame in frames):
+        raise HTTPException(400, 'All samples must come from the same video source')
+    with model_lock:
+        detector = get_detection_model()
+        results = list(detector.predict(frames, conf=max(.1, min(.9, conf)),
+                                        imgsz=512, verbose=False, device='cpu'))
+        sequence = []
+        for result in results:
+            boxes = []
+            for box in result.boxes:
+                label = detector.names[int(box.cls[0])].strip().lower()
+                boxes.append({'class_name': label, 'bbox': box.xyxy[0].tolist(),
+                              'confidence_pct': round(float(box.conf[0])*100, 1),
+                              'is_accident': label == 'accident'})
+            sequence.append(boxes)
+    detections, summary = summarize_sequence(sequence)
     incident = None
-    if highest:
-        # Shared Blob lease protects the cooldown across Vercel instances.
+    if summary['accident_detected'] and not preview_only:
         incident_id = 'INC-' + uuid.uuid4().hex
         payload = {'id': incident_id, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()),
-                   'location': location[:200], 'confidence': highest, 'has_clip': False,
-                   'status': 'RECORDING_EVIDENCE', 'clip_url': None, 'responses': {}}
-        created = storage.create(incident_id, payload)
-        if created:
+                   'location': location[:200], 'confidence': summary['max_accident_confidence'],
+                   'has_clip': False, 'status': 'RECORDING_EVIDENCE', 'clip_url': None,
+                   'responses': {}, 'confirmation': summary['confirmation_rule']}
+        if storage.create(incident_id, payload):
             incident = payload
-    return {'success': True, 'incident': incident, 'detections': detections,
-            'summary': {'accident_detected': bool(highest), 'max_accident_confidence': highest, 'vehicles_count': vehicles}}
+    return {'success': True, 'incident': incident, 'detections': detections, 'summary': summary}
 
 
 @app.post('/api/clips/upload')
