@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+venv
+__pycache__
+node_modules
+dist
+*.zip
+.env*
+data
+incidents.json*
+static/clips
+.test-deps

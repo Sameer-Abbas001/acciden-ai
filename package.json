@@ -1,0 +1,13 @@
+{
+  "name": "acciden-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --check static/app.js && node --check scripts/build.mjs && node --check static/navigation.js",
+    "test": "node --test scripts/deployment.test.mjs scripts/navigation.test.mjs"
+  }
+}

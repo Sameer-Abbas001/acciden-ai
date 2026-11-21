@@ -1,0 +1,11 @@
+model/
+static/clips/
+static/Dashboard.jsx
+*.zip
+__pycache__/
+.venv/
+venv/
+data/
+incidents.json*
+.env*
+.test-deps/

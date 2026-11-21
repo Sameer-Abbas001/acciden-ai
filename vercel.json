@@ -1,0 +1,74 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/admin",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/vision",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ambulance",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/police",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/admin.html",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/vision.html",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ambulance.html",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/police.html",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    },
+    {
+      "source": "/static/config.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    }
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{model/**,static/clips/**,*.zip,.venv/**,venv/**,node_modules/**}"
+    }
+  }
+}
