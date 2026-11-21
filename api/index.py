@@ -1,4 +1,3 @@
-import logging
 """Stateless Vercel API. Vercel Blob holds records and private evidence objects."""
 import base64
 import os
@@ -6,10 +5,12 @@ import re
 import tempfile
 import time
 import uuid
+import logging
 from pathlib import Path
 from urllib.request import urlopen
 
 from backend import storage
+from backend.evidence import finalize_recording
 from fastapi import FastAPI, HTTPException, Request, Form, File, UploadFile
 from fastapi.responses import JSONResponse, Response
 
@@ -134,25 +135,13 @@ def upload(incident_id: str = Form(...), video_file: UploadFile = File(...)):
     contents = video_file.file.read(3_000_001)
     if not 512 <= len(contents) <= 3_000_000:
         raise HTTPException(413, 'Recording must be between 512 bytes and 3 MB')
-    import cv2
     suffix = '.mp4' if 'mp4' in (video_file.content_type or '') else '.webm'
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
-        temporary.write(contents)
-        filename = temporary.name
-    try:
-        probe = cv2.VideoCapture(filename)
-        fps = probe.get(cv2.CAP_PROP_FPS)
-        count = probe.get(cv2.CAP_PROP_FRAME_COUNT)
-        probe.release()
-        if not fps or not 7.5 <= count / fps <= 8.5:
-            raise HTTPException(422, 'Recording must contain 8 seconds of playable video')
-    finally:
-        os.unlink(filename)
-    object_path = incident_id + '-' + uuid.uuid4().hex + suffix
-    storage.put_video(object_path, contents, 'video/mp4' if suffix == '.mp4' else 'video/webm')
+    contents, duration = finalize_recording(contents, suffix)
+    object_path = incident_id + '-' + uuid.uuid4().hex + '.mp4'
+    storage.put_video(object_path, contents, 'video/mp4')
     try:
         update(row, {'has_clip': True, 'object_path': object_path, 'clip_bytes': len(contents),
-                     'clip_duration': 8, 'status': 'AWAITING_CONFIRMATION'})
+                     'clip_duration': duration, 'status': 'AWAITING_CONFIRMATION'})
     except Exception:
         storage.delete_video(object_path)
         raise

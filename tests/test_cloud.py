@@ -26,6 +26,13 @@ class CloudAPI(unittest.TestCase):
                 update({'id': 'INC-test', 'version': 2, 'payload': {}}, {'has_clip': False})
             self.assertEqual(error.exception.status_code, 409)
 
+    def test_storage_failure_returns_json_instead_of_plain_server_error(self):
+        with patch('backend.storage.rows', side_effect=RuntimeError('test storage failure')):
+            response = self.client.get('/api/response/ambulance/incidents')
+            self.assertEqual(response.status_code, 500)
+            self.assertIn('runtime logs', response.json()['detail'])
+            self.assertNotIn('test storage failure', response.text)
+
     def test_delete_removes_object_and_preserves_incident(self):
         row = {'id': 'INC-test', 'version': 0, 'payload': {'object_path': 'INC-test.webm', 'has_clip': True}}
         with patch('api.index.record', return_value=row), patch('api.index.update') as write, patch('backend.storage.delete_video') as remote:

@@ -152,13 +152,14 @@ async function recordIncident(incident) {
     const recorder = new MediaRecorder(recordStream,{mimeType:mime,videoBitsPerSecond:1000000});
     const chunks = [];
     const blob = await new Promise((resolve,reject) => {
-      let aborted = null, timeout; const started = performance.now();
+      let aborted = null, timeout; let started = performance.now();
       const stop = () => { clearTimeout(timeout); clearInterval(ticker); if (recorder.state !== 'inactive') recorder.stop(); };
       recordedAbort = message => { aborted = new Error(message); stop(); };
       recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
       recorder.onerror = () => { aborted = new Error('Browser recording failed.'); stop(); reject(aborted); };
       recorder.onstop = () => aborted ? reject(aborted) : resolve(new Blob(chunks,{type:mime}));
-      recorder.start(250); timeout = setTimeout(stop,8000);
+      recorder.onstart = () => { started = performance.now(); timeout = setTimeout(stop,8250); };
+      recorder.start(250);
       ticker = setInterval(() => { const elapsed = performance.now()-started; $('recordProgress').style.width = `${Math.min(100,elapsed/80)}%`; $('recordingText').textContent = `Recording · ${Math.max(0,Math.ceil((8000-elapsed)/1000))} seconds remaining`; },100);
     });
     recordedAbort = null; recordStream.getTracks().forEach(t => t.stop()); $('recordProgress').style.width = '100%'; $('recordingText').textContent = 'Uploading to both dashboards…';

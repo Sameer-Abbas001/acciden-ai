@@ -4,7 +4,7 @@ torchvision==0.20.1+cpu
 fastapi
 uvicorn
 python-socketio
-imageio-ffmpeg
+imageio-ffmpeg==0.6.0
 numpy<2
 Pillow
 python-multipart
