@@ -15,7 +15,15 @@ const source = $('source'), canvas = $('monitor'), ctx = canvas.getContext('2d')
 const capture = document.createElement('canvas'), captureCtx = capture.getContext('2d');
 let toastTimer, recordedAbort = null, currentEvidence = null;
 function notify(message, error = false) { $('toast').textContent = message; $('toast').classList.toggle('error', error); $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, error ? 10000 : 5000); }
-async function api(url, options = {}) { const response = await fetch(backendUrl(url), {...options, cache: 'no-store', headers:options.headers}); const data = await response.json(); if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status})`); return data; }
+async function api(url, options = {}) {
+  const response = await fetch(backendUrl(url), {...options, cache: 'no-store', headers:options.headers});
+  const body = await response.text();
+  let data;
+  try { data = JSON.parse(body); }
+  catch { throw new Error(`The backend returned an invalid response (HTTP ${response.status}). Check the Vercel runtime logs.`); }
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status})`);
+  return data;
+}
 function form(values) { const data = new FormData(); Object.entries(values).forEach(([key, value]) => data.append(key, value)); return data; }
 function responseStatus(incident, agency) { return incident.responses?.[agency]?.status || 'PENDING'; }
 function pill(status, label = status.replaceAll('_', ' ').toLowerCase()) { return `<span class="pill ${escapeHTML(status.toLowerCase())}">${escapeHTML(label)}</span>`; }

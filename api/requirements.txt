@@ -5,7 +5,6 @@ fastapi
 python-multipart
 httpx
 numpy<2
-ultralytics
-opencv-python-headless
-
+ultralytics-opencv-headless==8.4.216
+opencv-python-headless==4.11.0.86
 vercel-blob>=0.5.0,<0.6

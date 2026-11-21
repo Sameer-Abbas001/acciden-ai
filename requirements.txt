@@ -5,12 +5,11 @@ fastapi
 uvicorn
 python-socketio
 imageio-ffmpeg
-opencv-python
 numpy<2
 Pillow
 python-multipart
-ultralytics
-opencv-python-headless
+ultralytics-opencv-headless==8.4.216
+opencv-python-headless==4.11.0.86
 httpx
 
 vercel-blob>=0.5.0,<0.6

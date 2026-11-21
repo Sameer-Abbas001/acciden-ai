@@ -1,3 +1,4 @@
+import logging
 """Stateless Vercel API. Vercel Blob holds records and private evidence objects."""
 import base64
 import os
@@ -21,7 +22,11 @@ model = None
 
 @app.middleware('http')
 async def no_cache(request: Request, call_next):
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logging.getLogger('acciden').exception('API request failed: %s', request.url.path)
+        response = JSONResponse({'detail': 'The backend could not complete this request. Check the Vercel runtime logs for the cause.'}, status_code=500)
     response.headers['Cache-Control'] = 'no-store'
     return response
 
