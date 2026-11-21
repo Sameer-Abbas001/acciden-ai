@@ -97,11 +97,6 @@ npm test
 npm run build
 ```
 
-## Deploy on Vercel
-
-Follow [START_HERE.md](START_HERE.md) and [DEPLOYMENT.md](DEPLOYMENT.md). Create a private Vercel Blob store and configure `BLOB_READ_WRITE_TOKEN` and `MODEL_URL`. The model file uses Git LFS; install Git LFS before your first commit.
-
-The project is configured for Vercel, but live YOLO inference and compatibility with the account's free-plan resource limits still need verification. The included documentation screenshots are not evidence of a successful cloud deployment.
 
 ## Project structure
 
